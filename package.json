@@ -4,8 +4,9 @@
   "version": "1.0.0",
   "type": "module",
   "scripts": {
-    "dev": "vite",
-    "build": "tsc --noEmit && vite build",
+    "sync-assets": "mkdir -p public/images public/audio && cp -R images/. public/images/ && cp -R audio/. public/audio/",
+    "dev": "pnpm sync-assets && vite",
+    "build": "pnpm sync-assets && tsc --noEmit && vite build",
     "preview": "vite preview",
     "test": "vitest run"
   },
