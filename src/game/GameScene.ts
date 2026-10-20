@@ -45,6 +45,9 @@ import { stageFrame } from "./responsive";
 const TOP_SHELF_Y = 318 / 1140;
 const BOTTOM_SHELF_Y = 748 / 1140;
 const TOP_BOTTLE_HEIGHT = 0.26;
+/** How far a selected top-shelf bottle can rise above the rack wood. */
+const TOP_BOTTLE_OVERHANG =
+  TOP_BOTTLE_HEIGHT * (1.12 + 0.42) - TOP_SHELF_Y;
 const BOTTOM_BOTTLE_HEIGHT = 0.23;
 /** Height of each curtain silhouette, as a fraction of the rack height. */
 const SHADOW_HEIGHT = BOTTOM_BOTTLE_HEIGHT * 0.94;
@@ -355,12 +358,14 @@ export class GameScene extends Phaser.Scene {
   private rackCenterY(): number {
     const band = this.contentBand();
     const rackH = RACK_SRC_H * this.rackScale();
-    const mid = (band.top + band.bottom) / 2;
     const half = rackH / 2;
-    if (band.bottom - half < band.top + half) {
-      return mid;
+    const minY = band.top + half;
+    const maxY = band.bottom - half;
+    if (maxY < minY) {
+      return (band.top + band.bottom) / 2;
     }
-    return Phaser.Math.Clamp(mid, band.top + half, band.bottom - half);
+    // Sit lower in the band so lifted bottles stay under the level badge.
+    return minY + (maxY - minY) * 0.68;
   }
 
   /** Free space between the level badge and the footer badges. */
@@ -370,12 +375,24 @@ export class GameScene extends Phaser.Scene {
     const bannerH =
       this.levelBanner.frame.height *
       (this.levelBannerBase || this.levelBanner.scaleY);
-    const top = this.levelBanner.y + bannerH / 2 + frame.pad * 0.45;
+    let top = Math.max(
+      this.levelBanner.y + bannerH / 2 + frame.pad * 0.55,
+      frame.top,
+    );
     let bottom = this.movesHud
       ? this.movesHud.y - this.movesHud.displayHeight - frame.pad * 0.35
       : height - frame.bottom;
     if (bottom < top + 80) {
       bottom = Math.min(height - frame.pad, top + Math.max(80, height * 0.45));
+    }
+    const stretch = this.midStretch > 0 ? this.midStretch : 1;
+    const bandHeight = Math.max(1, bottom - top);
+    const approxScale = Math.min(
+      bandHeight / RACK_SRC_H,
+      frame.rackMaxWidth / expandedWidth(stretch),
+    );
+    if (TOP_BOTTLE_OVERHANG > 0) {
+      top += RACK_SRC_H * approxScale * TOP_BOTTLE_OVERHANG;
     }
     return {
       top,
