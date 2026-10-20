@@ -1,5 +1,4 @@
 import Phaser from "phaser";
-import { GAME_HEIGHT, GAME_WIDTH, px } from "./display";
 import {
   countCorrect,
   createSecret,
@@ -14,6 +13,7 @@ import { BOTTLE_COLORS } from "./types";
 import { POINTER_CURSOR, useArrowCursor } from "./cursors";
 import {
   createMusicButton,
+  layoutMusicButton,
   playBackgroundMusic,
   syncBackgroundMusic,
 } from "./music";
@@ -40,6 +40,7 @@ import {
   slotCountForLevel,
   slotLogicalX,
 } from "./rack";
+import { stageFrame } from "./responsive";
 
 const TOP_SHELF_Y = 318 / 1140;
 const BOTTOM_SHELF_Y = 748 / 1140;
@@ -49,8 +50,6 @@ const BOTTOM_BOTTLE_HEIGHT = 0.23;
 const SHADOW_HEIGHT = BOTTOM_BOTTLE_HEIGHT * 0.94;
 const LIP_TOP = 330;
 const LIP_HEIGHT = 96;
-const RACK_HEIGHT = 404;
-const RACK_CENTER_Y = 418;
 const TUTORIAL_KEY = "bottle-match-tutorial";
 
 /** Tight crops of images/numbers.png, in order from 0 through 10. */
@@ -128,6 +127,8 @@ export class GameScene extends Phaser.Scene {
   private correctLabel!: Phaser.GameObjects.Image;
   private winBackdrop!: Phaser.GameObjects.Rectangle;
   private winOverlay!: Phaser.GameObjects.Container;
+  private victoryBanner!: Phaser.GameObjects.Image;
+  private shownStars: 1 | 2 | 3 | null = null;
   private movesText!: Phaser.GameObjects.Text;
   private timeText!: Phaser.GameObjects.Text;
   private movesHud!: Phaser.GameObjects.Image;
@@ -183,10 +184,10 @@ export class GameScene extends Phaser.Scene {
     this.addLevelFrames();
 
     this.levelBanner = this.add
-      .image(GAME_WIDTH / 2, px(78), "level-1")
+      .image(this.scale.width / 2, 0, "level-1")
       .setOrigin(0.5)
       .setDepth(8);
-    this.fitLevelBanner(1);
+    this.layoutChrome();
 
     this.buildStretchRack();
 
@@ -203,12 +204,12 @@ export class GameScene extends Phaser.Scene {
     });
 
     this.scoreMark = this.add
-      .image(GAME_WIDTH / 2, this.cover.y, "numbers", "count-0")
+      .image(this.scale.width / 2, this.cover.y, "numbers", "count-0")
       .setOrigin(0.5, 0.5)
       .setDepth(7);
     this.addCorrectFrame();
     this.correctLabel = this.add
-      .image(GAME_WIDTH / 2, this.cover.y, "correct", "label")
+      .image(this.scale.width / 2, this.cover.y, "correct", "label")
       .setOrigin(0.5, 0)
       .setDepth(7);
     this.fitScore();
@@ -219,7 +220,31 @@ export class GameScene extends Phaser.Scene {
     createMusicButton(this);
     this.buildPlayHud();
 
+    this.scale.on("resize", this.handleResize, this);
+    this.events.once("shutdown", () => {
+      this.scale.off("resize", this.handleResize, this);
+    });
+
     this.startRound();
+  }
+
+  private handleResize(): void {
+    if (!this.movesHud?.active || !this.levelBanner?.active) {
+      return;
+    }
+    this.layoutChrome();
+    this.layoutRack(this.midStretch || 1);
+    if (this.expanding || this.swapping) {
+      return;
+    }
+    this.syncPlayerBottles();
+    this.scaleHiddenBottles();
+    if (!this.won) {
+      this.syncSelection();
+    }
+    if (this.tutorialActive) {
+      this.refreshTutorial();
+    }
   }
 
   update(): void {
@@ -282,7 +307,7 @@ export class GameScene extends Phaser.Scene {
       .image(0, 0, "cover", "cover-right")
       .setOrigin(0, 0.5);
     this.cover = this.add
-      .container(GAME_WIDTH / 2, 0, [
+      .container(this.scale.width / 2, 0, [
         this.coverLeft,
         ...this.coverMids,
         this.coverRight,
@@ -321,15 +346,50 @@ export class GameScene extends Phaser.Scene {
   }
 
   private rackScale(): number {
-    return px(RACK_HEIGHT) / RACK_SRC_H;
+    const band = this.contentBand();
+    const maxH = Math.max(1, band.bottom - band.top);
+    const stretch = this.midStretch > 0 ? this.midStretch : 1;
+    return Math.min(maxH / RACK_SRC_H, band.maxWidth / expandedWidth(stretch));
+  }
+
+  private rackCenterY(): number {
+    const band = this.contentBand();
+    const rackH = RACK_SRC_H * this.rackScale();
+    const mid = (band.top + band.bottom) / 2;
+    const half = rackH / 2;
+    if (band.bottom - half < band.top + half) {
+      return mid;
+    }
+    return Phaser.Math.Clamp(mid, band.top + half, band.bottom - half);
+  }
+
+  /** Free space between the level badge and the footer badges. */
+  private contentBand(): { top: number; bottom: number; maxWidth: number } {
+    const height = this.scale.height;
+    const frame = stageFrame(this.scale.width, height);
+    const bannerH =
+      this.levelBanner.frame.height *
+      (this.levelBannerBase || this.levelBanner.scaleY);
+    const top = this.levelBanner.y + bannerH / 2 + frame.pad * 0.45;
+    let bottom = this.movesHud
+      ? this.movesHud.y - this.movesHud.displayHeight - frame.pad * 0.35
+      : height - frame.bottom;
+    if (bottom < top + 80) {
+      bottom = Math.min(height - frame.pad, top + Math.max(80, height * 0.45));
+    }
+    return {
+      top,
+      bottom,
+      maxWidth: frame.rackMaxWidth,
+    };
   }
 
   private layoutRack(stretch: number): void {
     this.midStretch = stretch;
     const scale = this.rackScale();
     const displayW = expandedWidth(stretch) * scale;
-    const leftEdge = GAME_WIDTH / 2 - displayW / 2;
-    const y = px(RACK_CENTER_Y);
+    const leftEdge = this.scale.width / 2 - displayW / 2;
+    const y = this.rackCenterY();
     const seam = 1;
 
     const place = (
@@ -396,11 +456,11 @@ export class GameScene extends Phaser.Scene {
     const topShelf = this.slotPoint(0, TOP_SHELF_Y).y;
     this.coverHomeY = topShelf + this.coverHeight * 0.42;
     if (!this.won && !this.expanding) {
-      this.cover.setPosition(GAME_WIDTH / 2, this.coverHomeY);
+      this.cover.setPosition(this.scale.width / 2, this.coverHomeY);
     } else {
-      this.cover.setX(GAME_WIDTH / 2);
+      this.cover.setX(this.scale.width / 2);
     }
-    this.scoreMark?.setPosition(GAME_WIDTH / 2, this.cover.y);
+    this.scoreMark?.setPosition(this.scale.width / 2, this.cover.y);
     this.fitScore();
   }
 
@@ -408,9 +468,11 @@ export class GameScene extends Phaser.Scene {
     const count = this.playerSlots.length;
     const scale = this.rackScale();
     const level1Width = expandedWidth(1) * scale;
-    const zoneHeight = level1Width * 0.28;
+    const frame = stageFrame(this.scale.width, this.scale.height);
+    const touchPad = frame.kind === "phone" ? 1.24 : frame.kind === "tablet" ? 1.12 : 1;
+    const zoneHeight = level1Width * 0.28 * touchPad;
     const zoneWidth =
-      count <= 4 ? level1Width * 0.2 : SLOT_PITCH * scale * 0.92;
+      (count <= 4 ? level1Width * 0.2 : SLOT_PITCH * scale * 0.92) * touchPad;
 
     this.zones.forEach((zone, index) => {
       if (index >= count) {
@@ -426,7 +488,7 @@ export class GameScene extends Phaser.Scene {
       const bottom = this.slotPoint(index, BOTTOM_SHELF_Y);
       this.playerBottles[index].setPosition(top.x, top.y);
       this.hiddenBottles[index].setPosition(bottom.x, bottom.y);
-      const shadowHeight = px(RACK_HEIGHT) * SHADOW_HEIGHT;
+      const shadowHeight = RACK_SRC_H * scale * SHADOW_HEIGHT;
       this.bottleShadows[index]
         .setVisible(true)
         .setScale(shadowHeight / this.bottleShadows[index].height)
@@ -441,17 +503,25 @@ export class GameScene extends Phaser.Scene {
   private slotPoint(index: number, yFrac: number): { x: number; y: number } {
     const scale = this.rackScale();
     const leftEdge =
-      GAME_WIDTH / 2 - (expandedWidth(this.midStretch) * scale) / 2;
+      this.scale.width / 2 - (expandedWidth(this.midStretch) * scale) / 2;
     const height = RACK_SRC_H * scale;
     return {
       x: leftEdge + slotLogicalX(slotCountForLevel(this.level), index) * scale,
-      y: px(RACK_CENTER_Y) - height / 2 + yFrac * height,
+      y: this.rackCenterY() - height / 2 + yFrac * height,
     };
   }
 
   private bottleScale(color: BottleColor, heightFraction: number): number {
     const frame = this.textures.getFrame(color);
-    return (px(RACK_HEIGHT) * heightFraction) / frame.height;
+    return (RACK_SRC_H * this.rackScale() * heightFraction) / frame.height;
+  }
+
+  private scaleHiddenBottles(): void {
+    this.secret.forEach((color, index) => {
+      this.hiddenBottles[index]?.setScale(
+        this.bottleScale(color, BOTTOM_BOTTLE_HEIGHT),
+      );
+    });
   }
 
   private startRound(): void {
@@ -468,15 +538,13 @@ export class GameScene extends Phaser.Scene {
     this.shownSecond = -1;
     this.refreshPlayHud();
     this.hideVictory();
-    this.fitLevelBanner(this.level);
+    this.layoutChrome();
     this.layoutRack(rackStretch(palette.length));
     this.resetCover();
     this.secret.forEach((color, index) => {
-      this.hiddenBottles[index]
-        .setTexture(color)
-        .setScale(this.bottleScale(color, BOTTOM_BOTTLE_HEIGHT))
-        .setVisible(true);
+      this.hiddenBottles[index].setTexture(color).setVisible(true);
     });
+    this.scaleHiddenBottles();
     this.syncPlayerBottles();
     this.syncSelection();
     this.syncCurtain();
@@ -493,7 +561,7 @@ export class GameScene extends Phaser.Scene {
     this.expanding = true;
     const from = this.midStretch;
     this.level = nextLevel;
-    this.fitLevelBanner(nextLevel, true);
+    this.layoutChrome(true);
     for (const sprite of [...this.playerBottles, ...this.hiddenBottles]) {
       sprite.setVisible(false);
     }
@@ -677,7 +745,7 @@ export class GameScene extends Phaser.Scene {
     const numberHeight = this.scoreMark.displayHeight;
     const labelHeight = numberHeight * 0.72;
     this.correctLabel.setScale(labelHeight / this.correctLabel.height);
-    const gap = Math.max(px(2), Math.round(numberHeight * 0.04));
+    const gap = Math.max(2, Math.round(numberHeight * 0.04));
     this.correctLabel.setPosition(
       this.scoreMark.x,
       this.scoreMark.y + numberHeight / 2 + gap,
@@ -690,22 +758,43 @@ export class GameScene extends Phaser.Scene {
     });
   }
 
-  private fitLevelBanner(level: number, pop = false): void {
-    const clamped = Math.min(LEVEL_FRAMES.length, Math.max(1, level));
+  private layoutChrome(popBanner = false): void {
+    const frame = stageFrame(this.scale.width, this.scale.height);
+    layoutMusicButton(this);
+
+    const clamped = Math.min(LEVEL_FRAMES.length, Math.max(1, this.level));
     this.levelBanner.setTexture(`level-${clamped}`);
-    this.levelBannerBase = px(220) / this.levelBanner.frame.width;
+    this.levelBannerBase = frame.bannerWidth / this.levelBanner.frame.width;
+    const bannerH = this.levelBanner.frame.height * this.levelBannerBase;
+    this.levelBanner.setPosition(frame.centerX, frame.pad + bannerH / 2);
     this.tweens.killTweensOf(this.levelBanner);
-    if (!pop) {
+    if (!popBanner) {
       this.levelBanner.setScale(this.levelBannerBase);
-      return;
+    } else {
+      this.levelBanner.setScale(this.levelBannerBase * 0.65);
+      this.tweens.add({
+        targets: this.levelBanner,
+        scale: this.levelBannerBase,
+        duration: 420,
+        ease: "Back.easeOut",
+      });
     }
-    this.levelBanner.setScale(this.levelBannerBase * 0.65);
-    this.tweens.add({
-      targets: this.levelBanner,
-      scale: this.levelBannerBase,
-      duration: 420,
-      ease: "Back.easeOut",
-    });
+
+    if (this.movesHud) {
+      const hudScale = frame.hudWidth / this.movesHud.width;
+      this.movesHud
+        .setScale(hudScale)
+        .setPosition(frame.pad, frame.height - frame.pad);
+      this.timeHud
+        .setScale(hudScale)
+        .setPosition(frame.width - frame.pad, frame.height - frame.pad);
+      this.placeWellLabel(this.movesHud, this.movesHudText, MOVES_WELL);
+      this.placeWellLabel(this.timeHud, this.timeHudText, TIME_WELL);
+    }
+
+    if (this.victoryBanner) {
+      this.layoutVictory();
+    }
   }
 
   private addNumberFrames(): void {
@@ -785,7 +874,7 @@ export class GameScene extends Phaser.Scene {
       ...this.hiddenBottles,
     ]);
     this.cover
-      .setPosition(GAME_WIDTH / 2, this.coverHomeY)
+      .setPosition(this.scale.width / 2, this.coverHomeY)
       .setAlpha(1)
       .setVisible(true);
     this.scoreMark.setAlpha(1).setVisible(true);
@@ -832,10 +921,10 @@ export class GameScene extends Phaser.Scene {
 
     this.winBackdrop = this.add
       .rectangle(
-        GAME_WIDTH / 2,
-        GAME_HEIGHT / 2,
-        GAME_WIDTH,
-        GAME_HEIGHT,
+        this.scale.width / 2,
+        this.scale.height / 2,
+        this.scale.width,
+        this.scale.height,
         0x1a120c,
         0.45,
       )
@@ -844,12 +933,12 @@ export class GameScene extends Phaser.Scene {
     this.winBackdrop.setInteractive();
 
     const burst = {
-      x: { min: 0, max: GAME_WIDTH },
-      y: px(-20),
+      x: { min: 0, max: this.scale.width },
+      y: -20,
       lifespan: 3200,
       speedX: { min: -120, max: 120 },
       speedY: { min: 40, max: 220 },
-      gravityY: px(280),
+      gravityY: 280,
       scale: { min: 0.55, max: 1.25 },
       rotate: { start: 0, end: 360 },
       tint: [0xff5a5a, 0xffd84a, 0x5dffa1, 0x5ac8ff, 0xff7ad9, 0xfff1a8],
@@ -868,13 +957,14 @@ export class GameScene extends Phaser.Scene {
       .setDepth(23);
 
     const overlay = this.add
-      .container(GAME_WIDTH / 2, GAME_HEIGHT / 2)
+      .container(this.scale.width / 2, this.scale.height / 2)
       .setDepth(22);
     const banner = this.add.image(0, 0, "victory");
+    this.victoryBanner = banner;
     banner.setScale(
       Math.min(
-        (GAME_HEIGHT * 0.94) / banner.height,
-        (GAME_WIDTH * 0.72) / banner.width,
+        (this.scale.height * 0.9) / banner.height,
+        (this.scale.width * 0.86) / banner.width,
       ),
     );
     const width = banner.displayWidth;
@@ -890,7 +980,7 @@ export class GameScene extends Phaser.Scene {
       fontSize: `${Math.round(height * 0.034)}px`,
       color: "#fff6dc",
       stroke: "#5c2e0c",
-      strokeThickness: Math.max(px(2), Math.round(height * 0.004)),
+      strokeThickness: Math.max(2, Math.round(height * 0.004)),
     };
     this.movesText = this.add
       .text((0.315 - 0.5) * width, (0.767 - 0.5) * height, "0", scoreStyle)
@@ -948,8 +1038,9 @@ export class GameScene extends Phaser.Scene {
     }
     const graphic = this.add.graphics().setVisible(false);
     graphic.fillStyle(0xffffff);
-    graphic.fillRoundedRect(0, 0, px(14), px(22), px(3));
-    graphic.generateTexture("confetti", px(14), px(22));
+    const size = Math.max(10, Math.round(Math.min(this.scale.width, this.scale.height) * 0.012));
+    graphic.fillRoundedRect(0, 0, size, Math.round(size * 1.5), Math.round(size * 0.2));
+    graphic.generateTexture("confetti", size, Math.round(size * 1.5));
     graphic.destroy();
   }
 
@@ -994,9 +1085,12 @@ export class GameScene extends Phaser.Scene {
     const tip =
       key === "tap-bottle" ? { x: 0.501, y: 0.966 } : { x: 0.503, y: 0.961 };
     this.tutorial.setTexture(key).setOrigin(tip.x, tip.y);
-    this.tutorial.setScale(
-      px(key === "tap-swap" ? 380 : 320) / this.tutorial.width,
+    const frame = stageFrame(this.scale.width, this.scale.height);
+    const tipWidth = Math.min(
+      frame.width * (key === "tap-swap" ? 0.46 : 0.38),
+      frame.height * 0.42,
     );
+    this.tutorial.setScale(tipWidth / this.tutorial.width);
 
     const color = this.playerSlots[index];
     const height =
@@ -1005,13 +1099,25 @@ export class GameScene extends Phaser.Scene {
     const rest = this.slotPoint(index, TOP_SHELF_Y);
     // Lowest point of the bob. Keep the arrow above the cap. The swap banner
     // is wide enough to cover a raised neighbor, so that step sits higher.
-    const raisedClearance = key === "tap-swap" ? px(14) : 0;
-    const capY = rest.y - height - px(8) - raisedClearance;
+    const raisedClearance = key === "tap-swap" ? height * 0.08 : 0;
+    let capY = rest.y - height - height * 0.06 - raisedClearance;
+    const minY = this.tutorial.originY * this.tutorial.displayHeight + frame.pad;
+    capY = Math.max(minY, capY);
+    let x = rest.x;
+    const tipW = this.tutorial.displayWidth;
+    const left = x - this.tutorial.originX * tipW;
+    if (left < frame.pad) {
+      x += frame.pad - left;
+    }
+    const right = x - this.tutorial.originX * tipW + tipW;
+    if (right > frame.width - frame.pad) {
+      x -= right - (frame.width - frame.pad);
+    }
     this.tweens.killTweensOf(this.tutorial);
-    this.tutorial.setPosition(rest.x, capY).setVisible(true);
+    this.tutorial.setPosition(x, capY).setVisible(true);
     this.tweens.add({
       targets: this.tutorial,
-      y: capY - px(10),
+      y: capY - height * 0.05,
       duration: 460,
       yoyo: true,
       repeat: -1,
@@ -1063,8 +1169,6 @@ export class GameScene extends Phaser.Scene {
 
   private buildPlayHud(): void {
     this.addHudFrames();
-    const margin = px(6);
-    const width = px(340);
     const labelStyle: Phaser.Types.GameObjects.Text.TextStyle = {
       fontFamily: '"Arial Rounded MT Bold", "Trebuchet MS", sans-serif',
       color: "#fff6dc",
@@ -1073,11 +1177,11 @@ export class GameScene extends Phaser.Scene {
     };
 
     this.movesHud = this.add
-      .image(margin, GAME_HEIGHT - margin, "time-moves", "moves")
+      .image(0, 0, "time-moves", "moves")
       .setOrigin(0, 1)
       .setDepth(14);
     this.timeHud = this.add
-      .image(GAME_WIDTH - margin, GAME_HEIGHT - margin, "time-moves", "time")
+      .image(0, 0, "time-moves", "time")
       .setOrigin(1, 1)
       .setDepth(14);
     this.movesHudText = this.add
@@ -1088,11 +1192,47 @@ export class GameScene extends Phaser.Scene {
       .text(0, 0, "0:00", labelStyle)
       .setOrigin(0.5)
       .setDepth(15);
+  }
 
-    this.movesHud.setScale(width / this.movesHud.width);
-    this.timeHud.setScale(width / this.timeHud.width);
-    this.placeWellLabel(this.movesHud, this.movesHudText, MOVES_WELL);
-    this.placeWellLabel(this.timeHud, this.timeHudText, TIME_WELL);
+  private layoutVictory(): void {
+    const width = this.scale.width;
+    const height = this.scale.height;
+    this.winBackdrop.setPosition(width / 2, height / 2).setSize(width, height);
+    this.winOverlay.setPosition(width / 2, height / 2);
+
+    const scale = Math.min(
+      (height * 0.9) / this.victoryBanner.height,
+      (width * 0.86) / this.victoryBanner.width,
+    );
+    this.victoryBanner.setScale(scale);
+    const bannerW = this.victoryBanner.displayWidth;
+    const bannerH = this.victoryBanner.displayHeight;
+    this.bannerWidth = bannerW;
+    this.bannerHeight = bannerH;
+
+    const fontSize = Math.round(bannerH * 0.034);
+    const scoreStyle: Phaser.Types.GameObjects.Text.TextStyle = {
+      fontFamily: '"Arial Rounded MT Bold", "Trebuchet MS", sans-serif',
+      fontSize: `${fontSize}px`,
+      color: "#fff6dc",
+      stroke: "#5c2e0c",
+      strokeThickness: Math.max(2, Math.round(bannerH * 0.004)),
+    };
+    this.movesText
+      .setStyle(scoreStyle)
+      .setPosition((0.315 - 0.5) * bannerW, (0.767 - 0.5) * bannerH);
+    this.timeText
+      .setStyle(scoreStyle)
+      .setPosition((0.683 - 0.5) * bannerW, (0.767 - 0.5) * bannerH);
+    this.continueButton.setPosition(
+      (0.499 - 0.5) * bannerW,
+      (0.865 - 0.5) * bannerH,
+    );
+    this.continueBase = (bannerH * 0.1) / this.continueButton.height;
+    this.continueButton.setScale(this.continueBase);
+    if (this.winOverlay.visible && this.shownStars) {
+      this.presentStars(this.shownStars, false);
+    }
   }
 
   private placeWellLabel(
@@ -1100,10 +1240,12 @@ export class GameScene extends Phaser.Scene {
     label: Phaser.GameObjects.Text,
     well: { x: number; y: number },
   ): void {
-    const fontSize = Math.round(badge.displayHeight * 0.11);
+    const frame = stageFrame(this.scale.width, this.scale.height);
+    const fontRatio = frame.kind === "phone" && !frame.portrait ? 0.18 : 0.11;
+    const fontSize = Math.round(badge.displayHeight * fontRatio);
     label.setStyle({
       fontSize: `${fontSize}px`,
-      strokeThickness: Math.max(px(3), Math.round(fontSize * 0.16)),
+      strokeThickness: Math.max(2, Math.round(fontSize * 0.16)),
     });
     label.setPosition(
       badge.x + (well.x - badge.originX) * badge.displayWidth,
@@ -1143,7 +1285,7 @@ export class GameScene extends Phaser.Scene {
 
     this.winBackdrop.setVisible(true).setAlpha(0);
     this.winOverlay.setVisible(true).setAlpha(0).setScale(0.35);
-    this.confettiBack.explode(70, GAME_WIDTH / 2, GAME_HEIGHT * 0.2);
+    this.confettiBack.explode(70, this.scale.width / 2, this.scale.height * 0.2);
     this.confettiBack.start();
     this.confettiFront.start();
 
@@ -1157,7 +1299,8 @@ export class GameScene extends Phaser.Scene {
     });
   }
 
-  private presentStars(count: 1 | 2 | 3): void {
+  private presentStars(count: 1 | 2 | 3, animate = true): void {
+    this.shownStars = count;
     const width = this.bannerWidth;
     const height = this.bannerHeight;
     // Cover each wooden star placeholder. The middle slot is slightly larger.
@@ -1193,6 +1336,10 @@ export class GameScene extends Phaser.Scene {
         return;
       }
       const scale = (width * stage.size) / star.width;
+      if (!animate) {
+        star.setPosition(stage.x, stage.y).setAngle(0).setScale(scale).setVisible(true);
+        return;
+      }
       star
         .setPosition(stage.x, stage.y)
         .setAngle(0)

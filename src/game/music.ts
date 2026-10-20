@@ -1,9 +1,10 @@
 import Phaser from 'phaser';
 import { POINTER_CURSOR } from './cursors';
-import { GAME_WIDTH, px } from './display';
+import { stageFrame } from './responsive';
 
 const STORAGE_KEY = 'bottle-match-music-muted';
 const MUSIC_VOLUME = 0.45;
+const musicButtons = new WeakMap<Phaser.Scene, Phaser.GameObjects.Image>();
 
 export function isMusicMuted(): boolean {
   try {
@@ -31,8 +32,14 @@ function addSoundFrames(scene: Phaser.Scene): void {
   }
 }
 
-function fitSoundButton(button: Phaser.GameObjects.Image): void {
-  button.setScale(px(84) / button.frame.height);
+export function layoutMusicButton(scene: Phaser.Scene): void {
+  const button = musicButtons.get(scene);
+  if (!button?.active) {
+    return;
+  }
+  const frame = stageFrame(scene.scale.width, scene.scale.height);
+  button.setPosition(frame.width - frame.pad, frame.pad);
+  button.setScale(frame.musicSize / button.frame.height);
 }
 
 /**
@@ -86,18 +93,23 @@ export function syncBackgroundMusic(scene: Phaser.Scene): void {
 export function createMusicButton(scene: Phaser.Scene): void {
   addSoundFrames(scene);
   const button = scene.add
-    .image(GAME_WIDTH - px(22), px(18), 'sound', isMusicMuted() ? 'muted' : 'on')
+    .image(0, 0, 'sound', isMusicMuted() ? 'muted' : 'on')
     .setOrigin(1, 0)
     .setDepth(40);
-  fitSoundButton(button);
-  button.setInteractive({ cursor: POINTER_CURSOR });
+  musicButtons.set(scene, button);
+  layoutMusicButton(scene);
+  button.setInteractive({
+    cursor: POINTER_CURSOR,
+    hitArea: new Phaser.Geom.Circle(button.width / 2, button.height / 2, button.height * 0.62),
+    hitAreaCallback: Phaser.Geom.Circle.Contains,
+  });
 
   button.on('pointerdown', () => {
     const muted = !isMusicMuted();
     setMusicMuted(muted);
     button.setFrame(muted ? 'muted' : 'on');
     scene.tweens.killTweensOf(button);
-    fitSoundButton(button);
+    layoutMusicButton(scene);
     syncBackgroundMusic(scene);
     scene.tweens.add({
       targets: button,
