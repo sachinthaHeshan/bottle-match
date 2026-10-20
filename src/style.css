@@ -1,17 +1,19 @@
 html,
-body {
+body,
+#game {
   margin: 0;
   width: 100%;
   height: 100%;
   overflow: hidden;
-  background: #6ec4ea;
-}
-
-#game {
-  width: 100%;
-  height: 100%;
+  background-color: #d2a26f;
+  background-image: url('../images/bg2.png');
+  background-position: center;
+  background-size: cover;
+  background-repeat: no-repeat;
+  cursor: url('../images/cursor-arrow-32.png') 2 1, auto;
 }
 
 #game canvas {
   display: block;
+  background: transparent;
 }
