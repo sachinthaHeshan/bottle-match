@@ -5,6 +5,34 @@ import { stageFrame } from './responsive';
 const STORAGE_KEY = 'bottle-match-music-muted';
 const MUSIC_VOLUME = 0.45;
 const musicButtons = new WeakMap<Phaser.Scene, Phaser.GameObjects.Image>();
+let unlockListenerAttached = false;
+
+function backgroundTracks(scene: Phaser.Scene): Phaser.Sound.BaseSound[] {
+  return scene.sound.getAll('bg');
+}
+
+/** One looping instance — scene.sound.play() would stack duplicates. */
+function ensureBackgroundTrack(scene: Phaser.Scene): Phaser.Sound.BaseSound | null {
+  if (!scene.cache.audio.exists('bg')) {
+    return null;
+  }
+
+  const tracks = backgroundTracks(scene);
+  let track = tracks.find((sound) => sound.isPlaying || sound.isPaused) ?? tracks[0];
+
+  for (const sound of tracks) {
+    if (sound !== track) {
+      sound.stop();
+      sound.destroy();
+    }
+  }
+
+  if (!track) {
+    track = scene.sound.add('bg', { loop: true, volume: MUSIC_VOLUME });
+  }
+
+  return track;
+}
 
 export function isMusicMuted(): boolean {
   try {
@@ -47,47 +75,44 @@ export function layoutMusicButton(scene: Phaser.Scene): void {
  * when the browser is still blocking audio.
  */
 export function playBackgroundMusic(scene: Phaser.Scene): void {
-  const locked = scene.sound.locked;
   syncBackgroundMusic(scene);
-  if (!locked) {
+  if (!scene.sound.locked || unlockListenerAttached) {
     return;
   }
 
+  unlockListenerAttached = true;
   scene.sound.once('unlocked', () => {
-    const music = scene.sound.get('bg');
-    if (music?.isPlaying) {
-      music.stop();
-    }
+    scene.sound.stopByKey('bg');
     syncBackgroundMusic(scene);
   });
 }
 
 /** Starts, resumes, or pauses the looping background track to match the mute button. */
 export function syncBackgroundMusic(scene: Phaser.Scene): void {
-  if (!scene.cache.audio.exists('bg')) {
+  const music = ensureBackgroundTrack(scene);
+  if (!music) {
     return;
   }
 
-  const music = scene.sound.get('bg');
   if (isMusicMuted()) {
-    if (music?.isPlaying) {
+    if (music.isPlaying) {
       music.pause();
     }
     return;
   }
 
-  if (scene.sound.get('victory')?.isPlaying) {
+  if (scene.sound.isPlaying('victory')) {
     return;
   }
 
-  if (music?.isPaused) {
+  if (music.isPaused) {
     music.resume();
     return;
   }
-  if (music?.isPlaying) {
+  if (music.isPlaying || scene.sound.isPlaying('bg')) {
     return;
   }
-  scene.sound.play('bg', { loop: true, volume: MUSIC_VOLUME });
+  music.play();
 }
 
 export function createMusicButton(scene: Phaser.Scene): void {
